@@ -14,10 +14,9 @@ jobs:
         run: |
           brew install ldid xz
           git clone --recursive https://github.com/theos/theos.git ~/theos
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
           mkdir -p ~/theos/sdks
-          curl -L https://github.com/theos/sdks/archive/master.zip -o sdks.zip
-          unzip -q sdks.zip -d ~/theos/sdks/
-          mv ~/theos/sdks/sdks-master/*.sdk ~/theos/sdks/
+          mv /tmp/sdks/*.sdk ~/theos/sdks/
 
       - name: Build Package
         env:
