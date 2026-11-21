@@ -14,72 +14,84 @@ jobs:
         run: |
           brew install ldid dpkg
 
-      - name: Build with Xcode
+      - name: Build iOS Scheme with Xcode
         run: |
-          ls -la
-          if [ -f "Podfile" ]; then
-            pod install
-          fi
+          pod install
+          echo "=== Daftar Scheme ==="
+          xcodebuild -list -workspace ReProvision.xcworkspace
 
-          WORKSPACE=$(find . -maxdepth 2 -name "*.xcworkspace" ! -path "*.xcodeproj/*" | head -n 1)
-          PROJECT=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1)
-
-          if [ -n "$WORKSPACE" ]; then
-            xcodebuild -workspace "$WORKSPACE" -alltargets -configuration Release -sdk iphoneos \
-              CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
-              CONFIGURATION_BUILD_DIR="$PWD/build_out"
-          elif [ -n "$PROJECT" ]; then
-            xcodebuild -project "$PROJECT" -alltargets -configuration Release -sdk iphoneos \
-              CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
-              CONFIGURATION_BUILD_DIR="$PWD/build_out"
-          else
-            echo "File proyek Xcode tidak ditemukan"
-            exit 1
+          SCHEME=$(xcodebuild -list -workspace ReProvision.xcworkspace | awk '/Schemes:/,0' | tail -n +2 | sed 's/^[[:space:]]*//' | grep -E '^(iOS|ReProvision)$' | head -n 1)
+          if [ -z "$SCHEME" ]; then
+            SCHEME=$(xcodebuild -list -workspace ReProvision.xcworkspace | awk '/Schemes:/,0' | tail -n +2 | sed 's/^[[:space:]]*//' | grep -iE 'ios|reprovision' | grep -vE '^(Pods-|tvOS|macOS|Tests)' | head -n 1)
           fi
+          echo "Target Scheme: $SCHEME"
+
+          xcodebuild -workspace ReProvision.xcworkspace \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            IPHONEOS_DEPLOYMENT_TARGET=12.0 \
+            ENABLE_BITCODE=NO \
+            GCC_WARN_INHIBIT_ALL_WARNINGS=YES \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR="$PWD/build_out"
 
       - name: Sign & Package IPA and DEB
         run: |
+          ls -la build_out
           mkdir -p dist Payload
-          APP_PATH=$(find build_out -maxdepth 2 -name "*.app" | head -n 1)
-          ENT_FILE=$(find . -maxdepth 3 \( -name "*entitlements*.plist" -o -name "*.entitlements" \) | head -n 1)
 
-          if [ -n "$ENT_FILE" ]; then
-            ldid -S"$ENT_FILE" "$APP_PATH/ReProvision" || ldid -S "$APP_PATH/ReProvision"
-          else
-            ldid -S "$APP_PATH/ReProvision"
+          APP_PATH=$(find build_out -maxdepth 2 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "File .app tidak ditemukan di build_out"
+            exit 1
           fi
 
-          # 1. Buat file .ipa (untuk TrollStore)
+          EXEC_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist")
+          ENT_FILE=$(find . -maxdepth 4 \( -name "*.entitlements" -o -name "*entitlements*.plist" \) | grep -i "iOS" | head -n 1)
+          if [ -z "$ENT_FILE" ]; then
+            ENT_FILE=$(find . -maxdepth 4 \( -name "*.entitlements" -o -name "*entitlements*.plist" \) | head -n 1)
+          fi
+
+          if [ -n "$ENT_FILE" ]; then
+            ldid -S"$ENT_FILE" "$APP_PATH/$EXEC_NAME" || ldid -S "$APP_PATH/$EXEC_NAME"
+          else
+            ldid -S "$APP_PATH/$EXEC_NAME"
+          fi
+
+          # 1. Buat .ipa (untuk TrollStore)
           cp -r "$APP_PATH" Payload/
           zip -qr dist/ReProvision-Reborn-Again.ipa Payload
 
-          # 2. Buat file .deb (Rootless - iOS 15/16+)
-          mkdir -p deb_pkg/DEBIAN deb_pkg/var/jb/Applications
-          if [ -d "layout" ]; then
-            cp -r layout/* deb_pkg/var/jb/
-            rm -rf deb_pkg/var/jb/DEBIAN
-          fi
-          cp -r "$APP_PATH" deb_pkg/var/jb/Applications/
+          # Siapkan file control
+          CONTROL_FILE=$(find . -maxdepth 3 -name "control" | head -n 1)
+          mkdir -m 0755 -p deb_rootless/DEBIAN deb_rootless/var/jb/Applications
+          mkdir -m 0755 -p deb_rootful/DEBIAN deb_rootful/Applications
 
-          if [ -f "build_out/reprovisiond" ]; then
-            mkdir -p deb_pkg/var/jb/usr/bin
-            cp build_out/reprovisiond deb_pkg/var/jb/usr/bin/
-            ldid -S deb_pkg/var/jb/usr/bin/reprovisiond
-          fi
-
-          if [ -d "layout/DEBIAN" ]; then
-            cp -r layout/DEBIAN/* deb_pkg/DEBIAN/
-          elif [ -d "DEBIAN" ]; then
-            cp -r DEBIAN/* deb_pkg/DEBIAN/
+          if [ -n "$CONTROL_FILE" ]; then
+            cp "$CONTROL_FILE" deb_rootless/DEBIAN/control
+            cp "$CONTROL_FILE" deb_rootful/DEBIAN/control
           else
-            printf "Package: com.matchstic.reprovision.reborn\nName: ReProvision Reborn\nVersion: 0.8.5\nArchitecture: iphoneos-arm64\nDescription: Re-sign applications on device\nMaintainer: bb91z\nAuthor: Matt Clarke\nSection: System\n" > deb_pkg/DEBIAN/control
+            printf "Package: com.matchstic.reprovision.reborn\nName: ReProvision Reborn\nVersion: 0.8.5\nArchitecture: iphoneos-arm64\nDescription: Re-sign applications on device\nMaintainer: bb91z\nAuthor: Matt Clarke\nSection: System\n" > deb_rootless/DEBIAN/control
+            cp deb_rootless/DEBIAN/control deb_rootful/DEBIAN/control
           fi
 
-          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64/' deb_pkg/DEBIAN/control
-          chmod 0755 deb_pkg/DEBIAN/* 2>/dev/null || true
-          dpkg-deb -Zgzip -b deb_pkg dist/ReProvision-Reborn-Again_rootless.deb
+          # 2. Buat .deb Rootless (iOS 15-16+ / Dopamine / Palera1n)
+          cp -r "$APP_PATH" deb_rootless/var/jb/Applications/
+          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64/' deb_rootless/DEBIAN/control
+          chmod 0644 deb_rootless/DEBIAN/control
+          dpkg-deb -Zgzip -b deb_rootless dist/ReProvision-Reborn-Again_rootless.deb
 
-      - name: Upload IPA and DEB
+          # 3. Buat .deb Rootful (iOS 14 ke bawah)
+          cp -r "$APP_PATH" deb_rootful/Applications/
+          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm/' deb_rootful/DEBIAN/control
+          chmod 0644 deb_rootful/DEBIAN/control
+          dpkg-deb -Zgzip -b deb_rootful dist/ReProvision-Reborn-Again_rootful.deb
+
+      - name: Upload Output Files
         uses: actions/upload-artifact@v4
         with:
           name: ReProvision-Reborn-Output
