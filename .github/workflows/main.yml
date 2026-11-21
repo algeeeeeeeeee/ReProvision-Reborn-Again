@@ -1,0 +1,32 @@
+name: Build DEB
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Theos & Dependencies
+        run: |
+          brew install ldid xz
+          git clone --recursive https://github.com/theos/theos.git ~/theos
+          mkdir -p ~/theos/sdks
+          curl -L https://github.com/theos/sdks/archive/master.zip -o sdks.zip
+          unzip -q sdks.zip -d ~/theos/sdks/
+          mv ~/theos/sdks/sdks-master/*.sdk ~/theos/sdks/
+
+      - name: Build Package
+        env:
+          THEOS: /Users/runner/theos
+        run: |
+          make clean package THEOS_PACKAGE_SCHEME=rootless
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReProvision-Reborn-deb
+          path: packages/*.deb
