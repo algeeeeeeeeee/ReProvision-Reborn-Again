@@ -1,4 +1,4 @@
-name: Build DEB
+name: Build DEB and IPA
 on: [workflow_dispatch]
 
 jobs:
@@ -10,22 +10,77 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Theos & Dependencies
+      - name: Install Packaging Tools
         run: |
-          brew install ldid xz
-          git clone --recursive https://github.com/theos/theos.git ~/theos
-          git clone --depth 1 https://github.com/theos/sdks.git /tmp/sdks
-          mkdir -p ~/theos/sdks
-          mv /tmp/sdks/*.sdk ~/theos/sdks/
+          brew install ldid dpkg
 
-      - name: Build Package
-        env:
-          THEOS: /Users/runner/theos
+      - name: Build with Xcode
         run: |
-          make clean package THEOS_PACKAGE_SCHEME=rootless
+          ls -la
+          if [ -f "Podfile" ]; then
+            pod install
+          fi
 
-      - name: Upload DEB
+          WORKSPACE=$(find . -maxdepth 2 -name "*.xcworkspace" ! -path "*.xcodeproj/*" | head -n 1)
+          PROJECT=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1)
+
+          if [ -n "$WORKSPACE" ]; then
+            xcodebuild -workspace "$WORKSPACE" -alltargets -configuration Release -sdk iphoneos \
+              CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+              CONFIGURATION_BUILD_DIR="$PWD/build_out"
+          elif [ -n "$PROJECT" ]; then
+            xcodebuild -project "$PROJECT" -alltargets -configuration Release -sdk iphoneos \
+              CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+              CONFIGURATION_BUILD_DIR="$PWD/build_out"
+          else
+            echo "File proyek Xcode tidak ditemukan"
+            exit 1
+          fi
+
+      - name: Sign & Package IPA and DEB
+        run: |
+          mkdir -p dist Payload
+          APP_PATH=$(find build_out -maxdepth 2 -name "*.app" | head -n 1)
+          ENT_FILE=$(find . -maxdepth 3 \( -name "*entitlements*.plist" -o -name "*.entitlements" \) | head -n 1)
+
+          if [ -n "$ENT_FILE" ]; then
+            ldid -S"$ENT_FILE" "$APP_PATH/ReProvision" || ldid -S "$APP_PATH/ReProvision"
+          else
+            ldid -S "$APP_PATH/ReProvision"
+          fi
+
+          # 1. Buat file .ipa (untuk TrollStore)
+          cp -r "$APP_PATH" Payload/
+          zip -qr dist/ReProvision-Reborn-Again.ipa Payload
+
+          # 2. Buat file .deb (Rootless - iOS 15/16+)
+          mkdir -p deb_pkg/DEBIAN deb_pkg/var/jb/Applications
+          if [ -d "layout" ]; then
+            cp -r layout/* deb_pkg/var/jb/
+            rm -rf deb_pkg/var/jb/DEBIAN
+          fi
+          cp -r "$APP_PATH" deb_pkg/var/jb/Applications/
+
+          if [ -f "build_out/reprovisiond" ]; then
+            mkdir -p deb_pkg/var/jb/usr/bin
+            cp build_out/reprovisiond deb_pkg/var/jb/usr/bin/
+            ldid -S deb_pkg/var/jb/usr/bin/reprovisiond
+          fi
+
+          if [ -d "layout/DEBIAN" ]; then
+            cp -r layout/DEBIAN/* deb_pkg/DEBIAN/
+          elif [ -d "DEBIAN" ]; then
+            cp -r DEBIAN/* deb_pkg/DEBIAN/
+          else
+            printf "Package: com.matchstic.reprovision.reborn\nName: ReProvision Reborn\nVersion: 0.8.5\nArchitecture: iphoneos-arm64\nDescription: Re-sign applications on device\nMaintainer: bb91z\nAuthor: Matt Clarke\nSection: System\n" > deb_pkg/DEBIAN/control
+          fi
+
+          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64/' deb_pkg/DEBIAN/control
+          chmod 0755 deb_pkg/DEBIAN/* 2>/dev/null || true
+          dpkg-deb -Zgzip -b deb_pkg dist/ReProvision-Reborn-Again_rootless.deb
+
+      - name: Upload IPA and DEB
         uses: actions/upload-artifact@v4
         with:
-          name: ReProvision-Reborn-deb
-          path: packages/*.deb
+          name: ReProvision-Reborn-Output
+          path: dist/*
