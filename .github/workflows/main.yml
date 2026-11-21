@@ -16,34 +16,32 @@ jobs:
 
       - name: Build iOS Scheme with Xcode
         run: |
+          set -o pipefail
           pod install
-          echo "=== Daftar Scheme ==="
-          xcodebuild -list -workspace ReProvision.xcworkspace
-
-          SCHEME=$(xcodebuild -list -workspace ReProvision.xcworkspace | awk '/Schemes:/,0' | tail -n +2 | sed 's/^[[:space:]]*//' | grep -E '^(iOS|ReProvision)$' | head -n 1)
-          if [ -z "$SCHEME" ]; then
-            SCHEME=$(xcodebuild -list -workspace ReProvision.xcworkspace | awk '/Schemes:/,0' | tail -n +2 | sed 's/^[[:space:]]*//' | grep -iE 'ios|reprovision' | grep -vE '^(Pods-|tvOS|macOS|Tests)' | head -n 1)
-          fi
-          echo "Target Scheme: $SCHEME"
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' Pods/Pods.xcodeproj/project.pbxproj
 
           xcodebuild -workspace ReProvision.xcworkspace \
-            -scheme "$SCHEME" \
+            -scheme iOS \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            IPHONEOS_DEPLOYMENT_TARGET=12.0 \
+            IPHONEOS_DEPLOYMENT_TARGET=15.0 \
             ENABLE_BITCODE=NO \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
             GCC_WARN_INHIBIT_ALL_WARNINGS=YES \
+            OTHER_CFLAGS='$(inherited) -Wno-error=implicit-function-declaration -Wno-error=incompatible-function-pointer-types -Wno-error=int-conversion' \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            CONFIGURATION_BUILD_DIR="$PWD/build_out"
+            CONFIGURATION_BUILD_DIR="$PWD/build_out" > xcodebuild.log 2>&1 || {
+              echo "=== RINGKASAN ERROR ==="
+              grep -E "error:|fatal error:" xcodebuild.log | tail -n 30
+              exit 1
+            }
 
       - name: Sign & Package IPA and DEB
         run: |
-          ls -la build_out
           mkdir -p dist Payload
-
           APP_PATH=$(find build_out -maxdepth 2 -name "*.app" | head -n 1)
           if [ -z "$APP_PATH" ]; then
             echo "File .app tidak ditemukan di build_out"
