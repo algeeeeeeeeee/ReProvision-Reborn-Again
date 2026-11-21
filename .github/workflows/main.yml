@@ -16,6 +16,7 @@ jobs:
 
       - name: Build iOS Scheme with Xcode
         run: |
+          export PATH="/opt/homebrew/bin:$PATH"
           set -o pipefail
           pod install
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' Pods/Pods.xcodeproj/project.pbxproj
@@ -34,13 +35,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             CONFIGURATION_BUILD_DIR="$PWD/build_out" > xcodebuild.log 2>&1 || {
-              echo "=== RINGKASAN ERROR ==="
-              grep -E "error:|fatal error:" xcodebuild.log | tail -n 30
+              echo "=== 50 BARIS TERAKHIR LOG XCODE ==="
+              tail -n 50 xcodebuild.log
               exit 1
             }
 
       - name: Sign & Package IPA and DEB
         run: |
+          export PATH="/opt/homebrew/bin:$PATH"
           mkdir -p dist Payload
           APP_PATH=$(find build_out -maxdepth 2 -name "*.app" | head -n 1)
           if [ -z "$APP_PATH" ]; then
